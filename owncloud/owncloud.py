@@ -578,9 +578,11 @@ class Client(object):
                 **kwargs
             )
 
+        # note: will result in error if url is used here (= non-chunked function call)
         stat_result = os.stat(local_source_file)
 
         headers = {}
+        # same here
         if kwargs.get('keep_mtime', True):
             headers['X-OC-MTIME'] = str(int(stat_result.st_mtime))
 
@@ -647,16 +649,29 @@ class Client(object):
         if remote_path.endswith('/'):
             remote_path += os.path.basename(local_source_file)
 
-        stat_result = os.stat(local_source_file)
+        if local_source_file.startswith('http'):
+            # overload input local_source_file and use as input for url
+            url = local_source_file
+            size = int(requests.head(url).headers['content-length'])
+            
+            urlresponse = requests.get(url, stream=True)
+            r_iterator = urlresponse.iter_content(chunk_size)
+            
+            headers = {}
+            
+        else:
+            # initial implementation for local file
+            url = None
+            stat_result = os.stat(local_source_file)
 
-        file_handle = open(local_source_file, 'rb', 8192)
-        file_handle.seek(0, os.SEEK_END)
-        size = file_handle.tell()
-        file_handle.seek(0)
+            file_handle = open(local_source_file, 'rb', 8192)
+            file_handle.seek(0, os.SEEK_END)
+            size = file_handle.tell()
+            file_handle.seek(0)
 
-        headers = {}
-        if kwargs.get('keep_mtime', True):
-            headers['X-OC-MTIME'] = str(int(stat_result.st_mtime))
+            headers = {}
+            if kwargs.get('keep_mtime', True):
+                headers['X-OC-MTIME'] = str(int(stat_result.st_mtime))
 
         if size == 0:
             return self._make_dav_request(
@@ -672,7 +687,14 @@ class Client(object):
             headers['OC-CHUNKED'] = '1'
 
         for chunk_index in range(0, int(chunk_count)):
-            data = file_handle.read(chunk_size)
+            # print('uploading chunk ', chunk_index)
+
+            # read data differently depending on upload from url or local upload
+            if url is None:
+                data = file_handle.read(chunk_size)
+            else:
+                data = next(r_iterator)
+            
             if chunk_count > 1:
                 chunk_name = '%s-chunking-%s-%i-%i' % \
                              (remote_path, transfer_id, chunk_count,
@@ -689,7 +711,10 @@ class Client(object):
                 result = False
                 break
 
-        file_handle.close()
+        if url is None:
+            file_handle.close()
+        else:
+            urlresponse.close()
         return result
 
     def mkdir(self, path):
